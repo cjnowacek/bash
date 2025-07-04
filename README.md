@@ -1,2 +1,2 @@
 # Bash
-usful bash scripts
+useful bash scripts
