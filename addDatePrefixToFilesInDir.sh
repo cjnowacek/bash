@@ -3,13 +3,24 @@
 # Use the first argument as the target directory, or default to current directory
 TARGET_DIR="${1:-.}"
 
+# Resolve absolute path
+TARGET_PATH="$(realpath "$TARGET_DIR")"
+
 # Show the target directory
-echo "Targeting directory: $(realpath "$TARGET_DIR")"
+echo "⚠️  WARNING: This will rename files in:"
+echo "$TARGET_PATH"
 echo
 
 # Sanity check: does the folder exist?
 if [ ! -d "$TARGET_DIR" ]; then
   echo "Error: '$TARGET_DIR' is not a directory."
+  exit 1
+fi
+
+# Ask for confirmation
+read -p "Are you sure you want to rename files in this directory? Type 'yes' to proceed: " confirm
+if [[ "$confirm" != "yes" ]]; then
+  echo "Aborted."
   exit 1
 fi
 
@@ -35,4 +46,3 @@ for file in "$TARGET_DIR"/*; do
   echo "Renaming: $base -> $new_name"
   mv "$file" "$new_path"
 done
-
