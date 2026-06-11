@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Directory to scan (default to ~/git/bash or use first argument)
-SCRIPTS_DIR="${1:-$HOME/projects/bash/}"
+# Directory to scan (defaults to this script's directory, or use first argument)
+SCRIPTS_DIR="${1:-$(cd "$(dirname "$0")" && pwd)}"
 
 # Sanity check
 if [ ! -d "$SCRIPTS_DIR" ]; then
