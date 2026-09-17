@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
 # Back up every GitHub repo on the account, locally and to Dropbox.
 #
-#   mirrors/<repo>.git         bare --mirror clones, updated incrementally
-#   bundles/<YYYY-MM-DD>/<repo>.bundle
-#                               one self-contained file per repo per day;
-#                               restore with: git clone <file>.bundle <dir>
+#   mirrors/<repo>.git               bare --mirror clones, updated incrementally
+#   bundles/<repo>/<YYYY-MM-DD>.bundle
+#                                     self-contained snapshot, written only
+#                                     when the repo's refs changed since the
+#                                     last bundle; newest $KEEP_BUNDLES kept.
+#                                     Restore: git clone <file>.bundle <dir>
 #
 # The bundles dir is rclone-synced to $RCLONE_DEST (direct to the remote, not
-# through the ~/Dropbox FUSE mount). Days older than $KEEP_DAYS are pruned
-# locally and the sync propagates the deletion.
+# through the ~/Dropbox FUSE mount). Because unchanged repos get no new file,
+# a daily run only uploads what actually moved.
 #
 # Needs: gh (authenticated: gh auth login), git, rclone with a dropbox: remote,
 # SSH access to GitHub (clones use the ssh URL).
 #
 # Usage: github-backup.sh [--no-sync]
-# Env overrides: GH_USER BACKUP_DIR RCLONE_DEST KEEP_DAYS
+# Env overrides: GH_USER BACKUP_DIR RCLONE_DEST KEEP_BUNDLES
 #                REPOS="owner/a owner/b"  (skip gh, back up only these)
 
 set -euo pipefail
@@ -22,7 +24,7 @@ set -euo pipefail
 GH_USER=${GH_USER:-cjnowacek}
 BACKUP_DIR=${BACKUP_DIR:-$HOME/backups/github}
 RCLONE_DEST=${RCLONE_DEST:-dropbox:99-system/github-backups}
-KEEP_DAYS=${KEEP_DAYS:-7}
+KEEP_BUNDLES=${KEEP_BUNDLES:-5}
 SYNC=true
 [[ "${1:-}" == "--no-sync" ]] && SYNC=false
 
@@ -31,8 +33,8 @@ err() { echo "ERROR: $1" >&2; }
 
 mirrors="$BACKUP_DIR/mirrors"
 bundles="$BACKUP_DIR/bundles"
-today="$bundles/$(date +%F)"
-mkdir -p "$mirrors" "$today"
+today=$(date +%F)
+mkdir -p "$mirrors" "$bundles"
 
 # One run at a time (the timer and a manual run could overlap).
 exec 9>"$BACKUP_DIR/.lock"
@@ -53,10 +55,11 @@ fi
 log "${#repos[@]} repos"
 
 # --- mirror + bundle ---------------------------------------------------------
-failed=()
+failed=() bundled=0 unchanged=0
 for full in "${repos[@]}"; do
   name=${full#*/}
   mirror="$mirrors/$name.git"
+  out="$bundles/$name"
 
   if [[ -d "$mirror" ]]; then
     if ! git -C "$mirror" remote update --prune >/dev/null 2>&1; then
@@ -69,17 +72,30 @@ for full in "${repos[@]}"; do
   fi
 
   # An empty repo has no refs and bundle refuses; that's fine to skip.
-  if git -C "$mirror" rev-parse --verify -q HEAD >/dev/null; then
-    git -C "$mirror" bundle create --quiet "$today/$name.bundle" --all
-    log "$full"
-  else
+  if ! git -C "$mirror" rev-parse --verify -q HEAD >/dev/null; then
     log "$full (empty, no bundle)"
+    continue
   fi
-done
 
-# --- prune old bundle days ---------------------------------------------------
-find "$bundles" -mindepth 1 -maxdepth 1 -type d -mtime +"$KEEP_DAYS" -print -exec rm -rf {} + \
-  | sed 's/^/:: pruned /' || true
+  # Fingerprint of every ref; a bundle is only worth writing when it moved.
+  refs=$(git -C "$mirror" for-each-ref | sha256sum | cut -d' ' -f1)
+  stamp="$mirror/.last-bundle-refs"
+  if [[ -f "$stamp" && "$(<"$stamp")" == "$refs" ]] && compgen -G "$out/*.bundle" >/dev/null; then
+    ((unchanged++)) || true
+    continue
+  fi
+
+  mkdir -p "$out"
+  git -C "$mirror" bundle create --quiet "$out/$today.bundle" --all
+  echo "$refs" >"$stamp"
+  ((bundled++)) || true
+  log "$full -> $today.bundle"
+
+  # Keep the newest $KEEP_BUNDLES (names sort by date).
+  ls -1 "$out"/*.bundle | sort | head -n -"$KEEP_BUNDLES" | while read -r old; do
+    rm -f "$old"; log "  pruned $(basename "$old")"
+  done
+done
 
 # --- sync to dropbox ---------------------------------------------------------
 if $SYNC; then
@@ -94,7 +110,7 @@ if $SYNC; then
 fi
 
 # --- summary -----------------------------------------------------------------
-log "done: $((${#repos[@]} - ${#failed[@]}))/${#repos[@]} ok, $(du -sh "$today" | cut -f1) today, bundles in $bundles"
+log "done: $bundled bundled, $unchanged unchanged, ${#failed[@]} failed of ${#repos[@]}; $(du -sh "$bundles" | cut -f1) in $bundles"
 if ((${#failed[@]})); then
   err "failed: ${failed[*]}"
   exit 1
