@@ -16,7 +16,7 @@
 # SSH access to GitHub (clones use the ssh URL).
 #
 # Usage: github-backup.sh [--no-sync]
-# Env overrides: GH_USER BACKUP_DIR RCLONE_DEST KEEP_BUNDLES
+# Env overrides: GH_USER BACKUP_DIR RCLONE_DEST KEEP_BUNDLES VAULT VAULT_DEST
 #                REPOS="owner/a owner/b"  (skip gh, back up only these)
 
 set -euo pipefail
@@ -106,6 +106,23 @@ if $SYNC; then
   else
     rclone sync "$bundles" "$RCLONE_DEST" --transfers 4 --stats-one-line --stats 0 -q
     log "synced bundles -> $RCLONE_DEST"
+  fi
+fi
+
+# --- zettelpara as plain files ---------------------------------------------
+# The bundles hold the vault's whole history but need git to read. This is
+# the same vault as plain .md files, readable from a phone or dropbox.com:
+# an exact copy of the working tree (so it includes what sync.sh has not
+# pushed yet), without .git and the .zk cache. A note deleted from the vault
+# goes from here too; its history stays in the bundles.
+VAULT=${VAULT:-$HOME/dev/zettelpara}
+VAULT_DEST=${VAULT_DEST:-dropbox:99-system/zettelpara-mirror}
+if $SYNC && [[ -d "$VAULT/.git" ]] && command -v rclone >/dev/null; then
+  if rclone sync "$VAULT" "$VAULT_DEST" --exclude '/.git/**' --exclude '/.zk/**' \
+       --transfers 4 --stats-one-line --stats 0 -q; then
+    log "mirrored $VAULT -> $VAULT_DEST"
+  else
+    err "vault mirror to $VAULT_DEST failed"; failed+=("zettelpara-mirror")
   fi
 fi
 
